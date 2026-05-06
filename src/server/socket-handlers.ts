@@ -127,7 +127,31 @@ const activeBrokers = new Map<string, any>();
 const discussionInitiators = new Map<string, string>();
 
 // NPC chat history: `${channelId}:${npcId}` -> [{ role, content, timestamp }]
+//
+// Used purely for UI history rendering on the client — OpenClaw maintains its
+// own session context server-side via sessionKey, so trimming here does not
+// affect AI response quality. The cap exists to keep server memory bounded
+// over long uptimes (a chatty channel × many NPCs × many days adds up).
 const npcChatHistory = new Map<string, { role: "player" | "npc"; content: string; timestamp: number }[]>();
+const NPC_HISTORY_MAX_ENTRIES = (() => {
+  const raw = Number(process.env.NPC_HISTORY_MAX_ENTRIES);
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 200;
+})();
+
+function pushNpcHistory(
+  key: string,
+  entry: { role: "player" | "npc"; content: string; timestamp: number },
+): { role: "player" | "npc"; content: string; timestamp: number }[] {
+  const arr = npcChatHistory.get(key) || [];
+  arr.push(entry);
+  if (arr.length > NPC_HISTORY_MAX_ENTRIES) {
+    // Drop the oldest excess in one slice — preserves chronological order
+    // and avoids per-push array shift cost.
+    arr.splice(0, arr.length - NPC_HISTORY_MAX_ENTRIES);
+  }
+  npcChatHistory.set(key, arr);
+  return arr;
+}
 
 // OpenClaw gateway connections: gatewayId -> gateway instance
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -188,9 +212,11 @@ function appendNpcHistoryMessage(channelId: string, npcId: string, content: stri
   const sanitizedContent = sanitizeNpcResponseText(content);
   if (!sanitizedContent.trim()) return null;
   const historyKey = `${channelId}:${npcId}`;
-  const history = npcChatHistory.get(historyKey) || [];
-  history.push({ role: "npc", content: sanitizedContent, timestamp: Date.now() });
-  npcChatHistory.set(historyKey, history);
+  pushNpcHistory(historyKey, {
+    role: "npc",
+    content: sanitizedContent,
+    timestamp: Date.now(),
+  });
   return sanitizedContent;
 }
 
@@ -581,7 +607,7 @@ async function streamNpcResponse(
   sessionKeyOverride?: string,
   emitEvent?: string,
 ): Promise<string> {
-  const { agentId, _channelId, sessionKeyPrefix } = npcConfig;
+  const { agentId, _channelId, sessionKeyPrefix, _name } = npcConfig;
   const responseEvent = emitEvent || "npc:response";
 
   if (!agentId) {
@@ -596,22 +622,85 @@ async function streamNpcResponse(
   }
 
   const sessionKey = sessionKeyOverride || `${sessionKeyPrefix || npcId}-dm-${userId}`;
+  // Latency telemetry — captures time-to-first-chunk + total. Lets ops see
+  // whether AI slowness is OpenClaw queueing (firstChunkMs high) vs model
+  // generation (totalMs - firstChunkMs high). Timeout is env-overridable in
+  // case the underlying gateway timeout is too generous for a given deploy.
+  const startedAt = Date.now();
+  let firstChunkAt = 0;
   try {
     const response = await gateway.chatSend(
       agentId,
       sessionKey,
       message,
       (delta: string) => {
+        if (firstChunkAt === 0) firstChunkAt = Date.now();
         socket.emit(responseEvent, { npcId, chunk: delta, done: false });
       },
       attachments,
     );
     socket.emit(responseEvent, { npcId, chunk: "", done: true });
+    logNpcLatency({
+      channelId: _channelId,
+      npcName: _name,
+      userId,
+      sessionKey,
+      messageBytes: message.length,
+      firstChunkMs: firstChunkAt > 0 ? firstChunkAt - startedAt : null,
+      totalMs: Date.now() - startedAt,
+      ok: true,
+    });
     return response || "";
   } catch (err) {
     console.error(`[npc] OpenClaw chatSend error for ${npcId}:`, err);
+    logNpcLatency({
+      channelId: _channelId,
+      npcName: _name,
+      userId,
+      sessionKey,
+      messageBytes: message.length,
+      firstChunkMs: firstChunkAt > 0 ? firstChunkAt - startedAt : null,
+      totalMs: Date.now() - startedAt,
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    });
     emitNpcSystemResponse(socket, npcId, "gateway_error");
     return "";
+  }
+}
+
+function logNpcLatency(fields: {
+  channelId: string;
+  npcName: string;
+  userId: string;
+  sessionKey: string;
+  messageBytes: number;
+  firstChunkMs: number | null;
+  totalMs: number;
+  ok: boolean;
+  error?: string;
+}): void {
+  // One JSON line per call; pipes cleanly into Loki/Datadog. We keep this
+  // local rather than going through src/lib/observability/events to avoid
+  // making src/server depend on the App Router lib path here, but the shape
+  // matches so a downstream consumer can merge them.
+  const payload = {
+    ts: new Date().toISOString(),
+    event: "npc.response",
+    channelId: fields.channelId,
+    npc: fields.npcName,
+    userId: fields.userId,
+    sessionKey: fields.sessionKey,
+    messageBytes: fields.messageBytes,
+    firstChunkMs: fields.firstChunkMs,
+    totalMs: fields.totalMs,
+    ok: fields.ok,
+    ...(fields.error ? { error: fields.error.slice(0, 200) } : {}),
+  };
+  try {
+    console.log(JSON.stringify(payload));
+  } catch {
+    /* never throw from logging */
   }
 }
 
@@ -650,9 +739,12 @@ async function streamMeetingNpcResponse(
   room.messages.push(npcMessage);
   if (room.messages.length > 100) room.messages.splice(0, room.messages.length - 100);
 
+  const startedAt = Date.now();
+  let firstChunkAt = 0;
   let fullText = "";
   try {
     await gateway.chatSend(agentId, sessionKey, prompt, (delta: string) => {
+      if (firstChunkAt === 0) firstChunkAt = Date.now();
       fullText += delta;
       npcMessage.content = fullText;
       emitMeetingNpcStream(io, channelId, {
@@ -670,8 +762,29 @@ async function streamMeetingNpcResponse(
       done: true,
     });
     io.to(`meeting-${channelId}`).emit("meeting:message", npcMessage);
+    logNpcLatency({
+      channelId,
+      npcName: _name,
+      userId: senderName, // meeting actor; not necessarily a user id
+      sessionKey,
+      messageBytes: prompt.length,
+      firstChunkMs: firstChunkAt > 0 ? firstChunkAt - startedAt : null,
+      totalMs: Date.now() - startedAt,
+      ok: true,
+    });
   } catch (err) {
     console.error(`[meeting] OpenClaw error for NPC ${_name}:`, err);
+    logNpcLatency({
+      channelId,
+      npcName: _name,
+      userId: senderName,
+      sessionKey,
+      messageBytes: prompt.length,
+      firstChunkMs: firstChunkAt > 0 ? firstChunkAt - startedAt : null,
+      totalMs: Date.now() - startedAt,
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    });
     room.messages.pop();
   }
 }
@@ -1056,8 +1169,11 @@ export function setupSocketHandlers(io: Server) {
 
         const player = players.get(socket.id);
         const historyKey = `${player?.mapId || npcConfig._channelId}:${npcId}`;
-        const history = npcChatHistory.get(historyKey) || [];
-        history.push({ role: "player", content: trimmed, timestamp: Date.now() });
+        pushNpcHistory(historyKey, {
+          role: "player",
+          content: trimmed,
+          timestamp: Date.now(),
+        });
 
         // Inject task reminder on every NPC DM so task actions can be parsed consistently.
         const fileSection = buildFilePromptSection(extractedFiles);
@@ -1070,7 +1186,11 @@ export function setupSocketHandlers(io: Server) {
         if (response) {
           const parsed = parseNpcResponse(response);
           const sanitizedResponse = sanitizeNpcResponseText(response);
-          history.push({ role: "npc", content: sanitizedResponse, timestamp: Date.now() });
+          pushNpcHistory(historyKey, {
+            role: "npc",
+            content: sanitizedResponse,
+            timestamp: Date.now(),
+          });
           if (player?.characterId) {
             await processNpcTaskActions(io, parsed, {
               channelId: npcConfig._channelId,
@@ -1084,7 +1204,6 @@ export function setupSocketHandlers(io: Server) {
           }
           socket.emit("npc:response-complete", { npcId, npcName: npcConfig._name || npcId });
         }
-        npcChatHistory.set(historyKey, history);
       },
     );
 

@@ -159,6 +159,10 @@ export function useLiveKitVoice(
   const lastBroadcastRef = useRef(0);
   const lastBroadcastedPosRef = useRef<{ x: number; y: number } | null>(null);
   const proximityTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Ref-trampoline for applyProximityVolumes so connect()'s closure can call
+  // it without listing it in its dep array — direct dependency would create
+  // a TDZ cycle since applyProximityVolumes is defined further down.
+  const applyProximityVolumesRef = useRef<() => void>(() => {});
   // Token expiry watchdog. Refreshes the LiveKit JWT before TTL elapses so
   // long sessions don't get bumped off the SFU.
   const tokenExpiresAtRef = useRef<number>(0);
@@ -362,7 +366,7 @@ export function useLiveKitVoice(
             const cams = snapshotCameras(room);
             setCameras(cams);
             setIsLocalCameraOn(cams.some((c) => c.isLocal));
-            applyProximityVolumes();
+            applyProximityVolumesRef.current();
           },
           onConnectionStateChange: (connState) => {
             if (!aliveRef.current || roomRef.current !== room) return;
@@ -421,7 +425,7 @@ export function useLiveKitVoice(
       }
       connectingRef.current = false;
     }
-  }, [channelId, characterId, snapshotParticipants, snapshotScreenShares, snapshotCameras, applyProximityVolumes]);
+  }, [channelId, characterId, snapshotParticipants, snapshotScreenShares, snapshotCameras]);
 
   const disconnect = useCallback(async () => {
     const room = roomRef.current;
@@ -547,6 +551,13 @@ export function useLiveKitVoice(
       }
     }
   }, [voiceSettings]);
+
+  // Keep the trampoline ref pointed at the latest applyProximityVolumes so
+  // connect()'s closure (which captured the ref, not the function) always
+  // calls the current version when track events fire.
+  useEffect(() => {
+    applyProximityVolumesRef.current = applyProximityVolumes;
+  }, [applyProximityVolumes]);
 
   const broadcastLocalPosition = useCallback(async (pos: { x: number; y: number }) => {
     const room = roomRef.current;

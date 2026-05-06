@@ -87,7 +87,7 @@ async function purgeSoftDeleted(args: CliArgs): Promise<number> {
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv);
-  logEvent("retention.start", args);
+  logEvent("retention.start", { ...args });
   await purgeSoftDeleted(args);
   logEvent("retention.done");
   process.exit(0);

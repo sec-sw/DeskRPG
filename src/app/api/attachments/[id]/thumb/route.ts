@@ -27,7 +27,10 @@ export async function GET(
     return jsonError(404, "not_found", "thumbnail unavailable");
   }
 
-  return new NextResponse(thumb.body, {
+  // Buffer is BodyInit-compatible at runtime, but TS marks Buffer.buffer as
+  // ArrayBufferLike (union with SharedArrayBuffer) which Next's strict types
+  // reject. The cast is safe — sharp always returns a non-shared ArrayBuffer.
+  return new NextResponse(thumb.body as unknown as BodyInit, {
     status: 200,
     headers: {
       "Content-Type": thumb.contentType,

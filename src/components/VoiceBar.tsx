@@ -36,15 +36,20 @@ export default function VoiceBar({ channelId, characterId }: VoiceBarProps) {
 
   // Bridge Phaser's local-tile event into the proximity voice hook. Done at
   // the VoiceBar level so the hook itself never needs to know Phaser exists.
+  // Depend on updateLocalPosition specifically — depending on the entire
+  // `voice` object causes the listener to churn whenever any voice state
+  // (participants, screen shares, ...) changes, which shows up as brief
+  // keyboard input dropouts in the Phaser canvas.
+  const updatePosition = voice.updateLocalPosition;
   useEffect(() => {
     const handler = (data: { x: number; y: number }) => {
-      voice.updateLocalPosition(data.x, data.y);
+      updatePosition(data.x, data.y);
     };
     EventBus.on("local-player-tile", handler);
     return () => {
       EventBus.off("local-player-tile", handler);
     };
-  }, [voice]);
+  }, [updatePosition]);
 
   // Hide entirely when LiveKit isn't configured or the channel owner has
   // disabled voice. The owner can flip enabled=true via channel settings to

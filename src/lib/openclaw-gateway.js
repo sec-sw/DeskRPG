@@ -20,6 +20,19 @@ const MODERN_ROLE = "operator";
 const MODERN_SCOPES = ["operator.read", "operator.write", "operator.admin"];
 const DEVICE_IDENTITIES_DIRNAME = "openclaw-devices";
 
+// Structured chat-flow logging. Off by default — set DEBUG_CHAT=1 (already
+// the convention for the dev:debug npm script) to see per-call WS timing.
+// Output is JSON-line so it pipes into the same observability stream as the
+// rest of DeskRPG's structured events.
+function _gwLog(event, fields) {
+  if (!process.env.DEBUG_CHAT) return;
+  try {
+    console.log(JSON.stringify({ ts: new Date().toISOString(), event, ...fields }));
+  } catch {
+    /* never throw from logging */
+  }
+}
+
 class OpenClawGatewayError extends Error {
   constructor({
     errorCode,
@@ -310,6 +323,7 @@ class OpenClawGateway {
       // sessionKey format: agent:{agentId}:{sessionName}
       const fullSessionKey = sessionKey.startsWith("agent:") ? sessionKey : `agent:${agentId}:${sessionKey}`;
 
+      const sentAt = Date.now();
       let id;
       try {
         const params = {
@@ -324,23 +338,70 @@ class OpenClawGateway {
       } catch (err) {
         return reject(err);
       }
+      _gwLog("gateway.chat.send", {
+        agentId,
+        sessionKey: fullSessionKey,
+        messageBytes: message.length,
+        attachments: attachments?.length ?? 0,
+      });
+
+      // Wrap onDelta to capture the time of the first delta — lets us
+      // separate "OpenClaw queue + model first-token" from "model streaming
+      // time" in the latency log.
+      let firstDeltaAt = 0;
+      const wrappedOnDelta = (delta) => {
+        if (firstDeltaAt === 0) {
+          firstDeltaAt = Date.now();
+          _gwLog("gateway.chat.first_delta", {
+            sessionKey: fullSessionKey,
+            wsToFirstDeltaMs: firstDeltaAt - sentAt,
+          });
+        }
+        if (typeof onDelta === "function") onDelta(delta);
+      };
 
       this._chatStreams.set(fullSessionKey, {
         requestId: id,
-        onDelta,
-        resolve: (text) => { this._chatStreams.delete(fullSessionKey); resolve(text); },
-        reject: (err) => { this._chatStreams.delete(fullSessionKey); reject(err); },
+        onDelta: wrappedOnDelta,
+        resolve: (text) => {
+          this._chatStreams.delete(fullSessionKey);
+          _gwLog("gateway.chat.done", {
+            sessionKey: fullSessionKey,
+            wsTotalMs: Date.now() - sentAt,
+            firstDeltaMs: firstDeltaAt > 0 ? firstDeltaAt - sentAt : null,
+            responseBytes: (text || "").length,
+            ok: true,
+          });
+          resolve(text);
+        },
+        reject: (err) => {
+          this._chatStreams.delete(fullSessionKey);
+          _gwLog("gateway.chat.done", {
+            sessionKey: fullSessionKey,
+            wsTotalMs: Date.now() - sentAt,
+            firstDeltaMs: firstDeltaAt > 0 ? firstDeltaAt - sentAt : null,
+            ok: false,
+            error: err?.message ? String(err.message).slice(0, 200) : "unknown",
+          });
+          reject(err);
+        },
         fullText: "",
       });
 
-      // Timeout for chat (3 minutes)
+      // Total chat timeout. Default 3 min, env-overridable for ops who need
+      // tighter SLAs (e.g. fast Haiku-only deployments) or longer ceilings
+      // (e.g. heavy Opus reasoning with large context).
+      const timeoutMs = (() => {
+        const raw = Number(process.env.NPC_RESPONSE_TIMEOUT_MS);
+        return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 180000;
+      })();
       const timer = setTimeout(() => {
         const stream = this._chatStreams.get(fullSessionKey);
         if (stream) {
           this._chatStreams.delete(fullSessionKey);
-          stream.reject(new Error("Chat timeout"));
+          stream.reject(new Error(`Chat timeout after ${timeoutMs}ms`));
         }
-      }, 180000);
+      }, timeoutMs);
       this._chatStreams.get(fullSessionKey)._timer = timer;
     });
   }

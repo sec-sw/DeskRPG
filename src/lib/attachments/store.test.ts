@@ -43,21 +43,26 @@ const TEST_USER_ID = randomUUID();
 const TEST_CHANNEL_ID = randomUUID();
 
 async function seed() {
-  const { db } = await import("@/db");
-  // Seed minimum schema: a user and a channel referencing the user.
-  // Using parameterized SQL via Drizzle's execute() requires a sql literal —
-  // simpler to use raw better-sqlite3 via the underlying client.
+  // The `db` proxy is lazy — it only initializes on first property access.
+  // `getDb()` is the explicit entry point that bootstraps the SQLite schema
+  // (CREATE TABLE IF NOT EXISTS for users, channels, attachments, etc.).
+  const { getDb } = await import("@/db");
+  getDb();
+
+  // Now that the tables exist we can INSERT seed rows via raw SQLite. Going
+  // through Drizzle would also work but raw SQL keeps the test focused.
   const Database = (await import("better-sqlite3")).default;
   const sqlite = new Database(tmpSqlite);
-  sqlite.exec(`
-    INSERT OR IGNORE INTO users (id, login_id, nickname, password_hash, system_role)
-    VALUES ('${TEST_USER_ID}', 'tester', 'Tester', 'x', 'user');
-    INSERT OR IGNORE INTO channels (id, name, owner_id, is_public, max_players, created_at, updated_at)
-    VALUES ('${TEST_CHANNEL_ID}', 'Test', '${TEST_USER_ID}', 1, 50, '${new Date().toISOString()}', '${new Date().toISOString()}');
-  `);
-  sqlite.close();
-  // Force the singleton to materialize so it sees the seeded rows.
-  void (db as unknown as { __unused?: never });
+  try {
+    sqlite.exec(`
+      INSERT OR IGNORE INTO users (id, login_id, nickname, password_hash, system_role)
+      VALUES ('${TEST_USER_ID}', 'tester', 'Tester', 'x', 'user');
+      INSERT OR IGNORE INTO channels (id, name, owner_id, is_public, max_players, created_at, updated_at)
+      VALUES ('${TEST_CHANNEL_ID}', 'Test', '${TEST_USER_ID}', 1, 50, '${new Date().toISOString()}', '${new Date().toISOString()}');
+    `);
+  } finally {
+    sqlite.close();
+  }
 }
 
 async function clearAttachments() {

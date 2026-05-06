@@ -28,11 +28,18 @@ test("attachmentKey: stable POSIX layout", () => {
   );
 });
 
-test("attachmentKey: rejects extension injection attempts", () => {
-  // Slashes / backslashes / null bytes get stripped, leaving a safe extension.
+test("attachmentKey: strips path separators from extensions", () => {
+  // Slashes are the security-relevant chars — those must go. Dots are valid
+  // in filenames (think .tar.gz) so they're preserved even in adversarial
+  // inputs; the storage key still can't traverse paths because slashes are
+  // gone.
   assert.equal(
     attachmentKey("ch1", "att1", "pdf/../etc"),
-    "channels/ch1/files/att1.pdfetc",
+    "channels/ch1/files/att1.pdf..etc",
+  );
+  assert.equal(
+    attachmentKey("ch1", "att1", "pdf\\..\\etc"),
+    "channels/ch1/files/att1.pdf..etc",
   );
 });
 

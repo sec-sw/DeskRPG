@@ -1011,11 +1011,16 @@ ${transcript}
     });
 
     // Channel chat (user-to-user)
-    socket.on("chat:send", ({ message }) => {
+    socket.on("chat:send", ({ message, attachmentId }) => {
       const player = players.get(socket.id);
       if (!player) return;
       const trimmed = String(message || "").trim().slice(0, 500);
-      if (!trimmed) return;
+      // Allow attachment-only messages (no text) when attachmentId is present.
+      const safeAttachmentId =
+        typeof attachmentId === "string" && /^[0-9a-f-]{20,40}$/i.test(attachmentId)
+          ? attachmentId
+          : null;
+      if (!trimmed && !safeAttachmentId) return;
       const now = Date.now();
       if (now - (lastChatTime.get(socket.id) || 0) < CHAT_COOLDOWN_MS) return;
       lastChatTime.set(socket.id, now);
@@ -1025,6 +1030,7 @@ ${transcript}
         sender: player.characterName || user.nickname,
         senderId: socket.id,
         content: trimmed,
+        attachmentId: safeAttachmentId,
         timestamp: now,
       };
       // Store in channel chat history

@@ -5,7 +5,7 @@ import { useSearchParams, useRouter } from "next/navigation";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useT, useLocale, LOCALES } from "@/lib/i18n";
-import { ClipboardList, MessageSquare, Undo2, Clock, Footprints, PhoneCall, Bell, ChevronDown, UserPlus, UserMinus, Settings, Share2, LogOut, Pencil, Users, Globe, RotateCcw, Bug, Info } from "lucide-react";
+import { ClipboardList, MessageSquare, Undo2, Clock, Footprints, PhoneCall, Bell, ChevronDown, UserPlus, UserMinus, Settings, Share2, LogOut, Pencil, Users, Globe, RotateCcw, Bug, Info, Folder } from "lucide-react";
 import type { Socket } from "socket.io-client";
 import {
   CharacterAppearance,
@@ -19,6 +19,8 @@ import NpcHireModal from "@/components/NpcHireModal";
 import type { NpcChatMessage } from "@/components/NpcDialog";
 import PasswordModal from "@/components/PasswordModal";
 import ChannelSettingsModal from "@/components/ChannelSettingsModal";
+import ChannelFilesPanel from "@/components/ChannelFilesPanel";
+import VoiceBar from "@/components/VoiceBar";
 import TaskBoard from "@/components/TaskBoard";
 import type { Task } from "@/components/TaskCard";
 import { getLocalizedErrorMessage, getLocalizedMessage } from "@/lib/i18n/error-codes";
@@ -275,6 +277,7 @@ function GamePageInner() {
   const [channelSettingsInitialTab, setChannelSettingsInitialTab] = useState<"settings" | "members" | "gateway">("settings");
   const [showTaskBoard, setShowTaskBoard] = useState(false);
   const [showAboutModal, setShowAboutModal] = useState(false);
+  const [showFilesPanel, setShowFilesPanel] = useState(false);
   const [allTasks, setAllTasks] = useState<Task[]>([]);
   const [meetingMinutesCount, setMeetingMinutesCount] = useState(0);
 
@@ -1169,7 +1172,7 @@ function GamePageInner() {
     [socket, dialogNpc],
   );
 
-  const handleChannelChatSend = useCallback((message: string) => {
+  const handleChannelChatSend = useCallback(async (message: string, files?: File[]) => {
     if (!socket || !socket.connected) {
       showToastNotification(
         "channel-chat-disconnected",
@@ -1177,8 +1180,67 @@ function GamePageInner() {
       );
       return;
     }
-    socket.emit("chat:send", { message });
-  }, [socket, showToastNotification, t]);
+
+    // Plain text-only message — original fast path.
+    if (!files || files.length === 0) {
+      socket.emit("chat:send", { message });
+      return;
+    }
+
+    // File(s) present: upload the first attachment to the channel, then
+    // emit the chat message referencing it. v1 supports one attachment per
+    // message — additional files become subsequent messages.
+    if (!channelId) return;
+    const [primary, ...rest] = files;
+    let attachmentId: string | null = null;
+    try {
+      const fd = new FormData();
+      fd.append("file", primary);
+      const res = await fetch(`/api/channels/${channelId}/attachments`, {
+        method: "POST",
+        body: fd,
+        credentials: "same-origin",
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        showToastNotification(
+          "channel-attachment-upload-failed",
+          data?.errorCode
+            ? getLocalizedErrorMessage(t, data, "attachments.uploadFailed")
+            : t("attachments.uploadFailed"),
+        );
+        return;
+      }
+      const data = (await res.json()) as { attachment?: { id: string } };
+      attachmentId = data.attachment?.id ?? null;
+    } catch {
+      showToastNotification("channel-attachment-upload-failed", t("attachments.uploadFailed"));
+      return;
+    }
+
+    socket.emit("chat:send", { message, attachmentId });
+
+    // Spill remaining files into separate messages so each one is searchable.
+    for (const extra of rest) {
+      const fd = new FormData();
+      fd.append("file", extra);
+      try {
+        const res = await fetch(`/api/channels/${channelId}/attachments`, {
+          method: "POST",
+          body: fd,
+          credentials: "same-origin",
+        });
+        if (res.ok) {
+          const data = (await res.json()) as { attachment?: { id: string } };
+          if (data.attachment?.id) {
+            socket.emit("chat:send", { message: "", attachmentId: data.attachment.id });
+          }
+        }
+      } catch {
+        /* best effort for tail files */
+      }
+    }
+  }, [socket, channelId, showToastNotification, t]);
 
   const handleGamePasswordSubmit = useCallback(async (password: string): Promise<string | null> => {
     if (!channelId) return t("errors.failedToJoinChannel");
@@ -1770,6 +1832,19 @@ function GamePageInner() {
             })()}
           </button>
 
+          {/* Files button */}
+          <button
+            onClick={() => setShowFilesPanel((v) => !v)}
+            className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-caption font-semibold ${
+              showFilesPanel
+                ? "bg-primary text-white"
+                : "bg-white/5 border border-white/10 text-text-secondary hover:text-white hover:bg-white/10"
+            }`}
+            title={t("attachments.title")}
+          >
+            <Folder className="w-3 h-3" /> {t("attachments.title")}
+          </button>
+
           {/* Separator */}
           <div className="w-px h-5 bg-border" />
 
@@ -2184,6 +2259,21 @@ function GamePageInner() {
         onResumeTask={resumeTask}
         onCompleteTask={completeTask}
       />
+
+      {showFilesPanel && channelId && (
+        <div className="fixed top-[40px] right-0 bottom-0 z-30 w-[320px] border-l border-border shadow-2xl">
+          <ChannelFilesPanel
+            channelId={channelId}
+            socket={socketRef.current}
+            isOwner={isOwner}
+            onClose={() => setShowFilesPanel(false)}
+          />
+        </div>
+      )}
+
+      {channelId && mode === "office" && (
+        <VoiceBar channelId={channelId} characterId={characterId ?? null} />
+      )}
 
       {/* Placement mode indicator */}
       {placementMode && (

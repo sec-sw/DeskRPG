@@ -11,5 +11,6 @@ test("runtime paths resolve under DESKRPG_HOME when provided", async () => {
   assert.equal(runtimePaths.getDeskRpgDataDir(), "/tmp/deskrpg-home/data");
   assert.equal(runtimePaths.getDeskRpgSqlitePath(), "/tmp/deskrpg-home/data/deskrpg.db");
   assert.equal(runtimePaths.getDeskRpgUploadsDir(), "/tmp/deskrpg-home/uploads");
+  assert.equal(runtimePaths.getDeskRpgAttachmentsDir(), "/tmp/deskrpg-home/uploads/attachments");
   assert.equal(runtimePaths.getDeskRpgLogsDir(), "/tmp/deskrpg-home/logs");
 });

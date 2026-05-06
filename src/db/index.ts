@@ -56,6 +56,8 @@ export const tilesetImages = activeSchema.tilesetImages;
 export const projects = activeSchema.projects;
 export const projectTilesets = activeSchema.projectTilesets;
 export const projectStamps = activeSchema.projectStamps;
+export const attachments = activeSchema.attachments;
+export const voiceRooms = activeSchema.voiceRooms;
 
 // Use PG type for all API routes — Drizzle's runtime API is identical across dialects.
 type DbInstance = NodePgDatabase<typeof pgSchema>;
@@ -326,6 +328,36 @@ export function ensureSqliteCompatibility(sqlite: BetterSqlite3.Database) {
     CREATE INDEX IF NOT EXISTS idx_npc_reports_channel ON npc_reports(channel_id);
     CREATE INDEX IF NOT EXISTS idx_npc_reports_target_user ON npc_reports(target_user_id);
     CREATE INDEX IF NOT EXISTS idx_npc_reports_status ON npc_reports(status);
+    CREATE TABLE IF NOT EXISTS attachments (
+      id TEXT PRIMARY KEY NOT NULL,
+      channel_id TEXT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+      uploader_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+      filename TEXT NOT NULL,
+      content_type TEXT NOT NULL,
+      byte_size INTEGER NOT NULL,
+      sha256 TEXT NOT NULL,
+      storage_driver TEXT NOT NULL,
+      storage_key TEXT NOT NULL,
+      thumbnail_key TEXT,
+      metadata TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL,
+      deleted_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_attachments_channel ON attachments(channel_id);
+    CREATE INDEX IF NOT EXISTS idx_attachments_uploader ON attachments(uploader_id);
+    CREATE INDEX IF NOT EXISTS idx_attachments_created ON attachments(created_at);
+    CREATE TABLE IF NOT EXISTS voice_rooms (
+      id TEXT PRIMARY KEY NOT NULL,
+      channel_id TEXT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+      livekit_room_name TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      access_mode TEXT NOT NULL DEFAULT 'members',
+      proximity_enabled INTEGER NOT NULL DEFAULT 0,
+      proximity_radius INTEGER NOT NULL DEFAULT 5,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS voice_rooms_channel_unique ON voice_rooms(channel_id);
   `);
 
   applySqliteAlterStatements(sqlite, "users", [

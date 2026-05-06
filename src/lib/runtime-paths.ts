@@ -48,6 +48,10 @@ export function getDeskRpgTemplateUploadDir(templateId: string, options: DeskRpg
   return path.join(getDeskRpgUploadsDir(options), templateId);
 }
 
+export function getDeskRpgAttachmentsDir(options: DeskRpgHomeOptions = {}) {
+  return path.join(getDeskRpgUploadsDir(options), "attachments");
+}
+
 export function ensureDeskRpgHome(options: DeskRpgHomeOptions = {}) {
   const homeDir = getDeskRpgHomeDir(options);
   const envPath = getDeskRpgEnvPath(options);
@@ -59,6 +63,7 @@ export function ensureDeskRpgHome(options: DeskRpgHomeOptions = {}) {
   fs.mkdirSync(homeDir, { recursive: true });
   fs.mkdirSync(dataDir, { recursive: true });
   fs.mkdirSync(uploadsDir, { recursive: true });
+  fs.mkdirSync(getDeskRpgAttachmentsDir(options), { recursive: true });
   fs.mkdirSync(logsDir, { recursive: true });
 
   if (!fs.existsSync(envPath)) {

@@ -9,12 +9,14 @@ import TaskChatView, { type TaskMessage } from "./TaskChatView";
 import ChatInput from "./ChatInput";
 import Tab from "./ui/Tab";
 import ChatBubble from "./ui/ChatBubble";
+import ChatAttachmentPreview from "./ChatAttachmentPreview";
 
 export interface ChannelChatMessage {
   id: string;
   sender: string;
   senderId: string;
   content: string;
+  attachmentId?: string | null;
   timestamp: number;
 }
 
@@ -49,7 +51,7 @@ interface ChatPanelProps {
   channelMessages: ChannelChatMessage[];
   channelChatOpen?: boolean;
   channelChatInputDisabled?: boolean;
-  onSendChannelChat: (message: string) => void;
+  onSendChannelChat: (message: string, files?: File[]) => void;
   currentPlayerName?: string;
 }
 
@@ -314,11 +316,20 @@ export default function ChatPanel({
                 return (
                   <ChatBubble key={msg.id} sender={isMe ? "player" : "npc"} name={!isMe ? msg.sender : undefined}>
                     {msg.content}
+                    {msg.attachmentId && (
+                      <ChatAttachmentPreview attachmentId={msg.attachmentId} />
+                    )}
                   </ChatBubble>
                 );
               })}
             </div>
-            <ChatInput onSend={onSendChannelChat} placeholder={channelChatInputDisabled ? t("chat.moveCloser") : t("chat.placeholder")} disabled={!!channelChatInputDisabled} autoFocus />
+            <ChatInput
+              onSend={onSendChannelChat}
+              placeholder={channelChatInputDisabled ? t("chat.moveCloser") : t("chat.placeholder")}
+              disabled={!!channelChatInputDisabled}
+              autoFocus
+              showFileUpload
+            />
           </>
         )}
       </div>

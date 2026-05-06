@@ -1,0 +1,90 @@
+# docker/docker-compose.livekit.yml
+#
+# DeskRPG + PostgreSQL + LiveKit (Apache 2.0) — adds realtime voice/video/screen-share.
+#
+# Usage:
+#   cp .env.example .env.docker
+#   # edit .env.docker:
+#   #   JWT_SECRET=<random>
+#   #   POSTGRES_PASSWORD=<random>
+#   #   LIVEKIT_API_KEY=devkey
+#   #   LIVEKIT_API_SECRET=<random 64-char>
+#   docker compose --env-file .env.docker -f docker/docker-compose.livekit.yml up -d
+#
+# Ports:
+#   3102  → DeskRPG web (host:container 3102:3000)
+#   3103  → DeskRPG socket gateway (3103:3001)
+#   7880  → LiveKit signaling (WS) — set LIVEKIT_URL=ws://localhost:7880
+#   7881  → LiveKit ICE/TCP fallback
+#   7882/udp → LiveKit RTC (UDP). For LAN testing only — production behind a TURN
+#              server or with --advertise-ip set.
+
+services:
+  deskrpg-db:
+    image: postgres:16-alpine
+    container_name: deskrpg-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: deskrpg
+      POSTGRES_USER: deskrpg
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-deskrpg_dev_pw}
+    ports:
+      - "5437:5432"
+    volumes:
+      - deskrpg-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U deskrpg -d deskrpg"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  livekit:
+    image: livekit/livekit-server:latest
+    container_name: deskrpg-livekit
+    restart: unless-stopped
+    command:
+      - --dev
+      - --bind=0.0.0.0
+      - --keys=${LIVEKIT_API_KEY:-devkey}=${LIVEKIT_API_SECRET:-devsecret-change-me}
+    ports:
+      - "7880:7880"   # signaling (HTTP/WS)
+      - "7881:7881"   # ICE/TCP
+      - "7882:7882/udp"  # RTC media (UDP)
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:7880/"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  deskrpg-app:
+    image: ${DESKRPG_IMAGE:-dandacompany/deskrpg:latest}
+    container_name: deskrpg-app
+    restart: unless-stopped
+    ports:
+      - "3102:3000"
+      - "3103:3001"
+    volumes:
+      - ../public/assets:/app/public/assets
+      - deskrpg-uploads:/home/node/.deskrpg/uploads
+    environment:
+      DATABASE_URL: postgresql://deskrpg:${POSTGRES_PASSWORD:-deskrpg_dev_pw}@deskrpg-db:5432/deskrpg
+      JWT_SECRET: ${JWT_SECRET}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      # Storage: default to local — point STORAGE_DRIVER=s3 + S3_* vars to use object storage instead.
+      STORAGE_DRIVER: ${STORAGE_DRIVER:-local}
+      STORAGE_FILE_MAX_BYTES: ${STORAGE_FILE_MAX_BYTES:-104857600}
+      STORAGE_CHANNEL_QUOTA_BYTES: ${STORAGE_CHANNEL_QUOTA_BYTES:-5368709120}
+      # LiveKit — server addresses livekit by service name; browser uses host port.
+      LIVEKIT_URL: http://livekit:7880
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-devkey}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-devsecret-change-me}
+      NEXT_PUBLIC_LIVEKIT_URL: ${NEXT_PUBLIC_LIVEKIT_URL:-ws://localhost:7880}
+    depends_on:
+      deskrpg-db:
+        condition: service_healthy
+      livekit:
+        condition: service_started
+
+volumes:
+  deskrpg-pgdata:
+  deskrpg-uploads:

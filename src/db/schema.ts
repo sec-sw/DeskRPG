@@ -357,3 +357,49 @@ export const projectStamps = pgTable("project_stamps", {
 }, (t) => [
   unique("uq_project_stamp").on(t.projectId, t.stampId),
 ]);
+
+// ── Channel attachments (persistent file sharing) ─────────────────────
+// Files are immutable once uploaded — re-upload creates a new row.
+// `storage_driver` records which backend the bytes live on so a future
+// migration from local→s3 can be done lazily.
+export const attachments = pgTable("attachments", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  channelId: uuid("channel_id").notNull().references(() => channels.id, { onDelete: "cascade" }),
+  uploaderId: uuid("uploader_id").notNull().references(() => users.id, { onDelete: "restrict" }),
+  filename: varchar("filename", { length: 255 }).notNull(),
+  contentType: varchar("content_type", { length: 127 }).notNull(),
+  byteSize: integer("byte_size").notNull(),
+  sha256: varchar("sha256", { length: 64 }).notNull(),
+  storageDriver: varchar("storage_driver", { length: 16 }).notNull(),
+  storageKey: text("storage_key").notNull(),
+  thumbnailKey: text("thumbnail_key"),
+  // Free-form metadata: dimensions for images, page count for pdfs, etc.
+  metadata: jsonb("metadata").default({}).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  deletedAt: timestamp("deleted_at", { withTimezone: true }),
+}, (table) => [
+  index("idx_attachments_channel").on(table.channelId),
+  index("idx_attachments_uploader").on(table.uploaderId),
+  index("idx_attachments_created").on(table.createdAt),
+]);
+
+// ── Voice rooms (LiveKit) ─────────────────────────────────────────────
+// One row per channel that has had voice/video activity. Created lazily
+// on first join, kept around so settings persist across empty/active cycles.
+export const voiceRooms = pgTable("voice_rooms", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  channelId: uuid("channel_id").notNull().references(() => channels.id, { onDelete: "cascade" }),
+  livekitRoomName: varchar("livekit_room_name", { length: 200 }).notNull(),
+  // Voice-bar feature flag at the channel level — owner can disable.
+  enabled: boolean("enabled").notNull().default(true),
+  // "open" allows any channel member; "members" restricts to channel members
+  // (today these mean the same thing — kept here so we can extend later).
+  accessMode: varchar("access_mode", { length: 16 }).notNull().default("members"),
+  // Proximity voice toggle (Phase 5).
+  proximityEnabled: boolean("proximity_enabled").notNull().default(false),
+  proximityRadius: integer("proximity_radius").notNull().default(5),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("voice_rooms_channel_unique").on(table.channelId),
+]);

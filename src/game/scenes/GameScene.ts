@@ -2837,6 +2837,13 @@ export class GameScene extends Phaser.Scene {
     this.lastSentAnim = animation;
 
     this.socket.emit("player:move", { x, y, direction, animation });
+    // Broadcast tile-resolution coordinates for proximity voice. Throttled
+    // here at the same cadence as multiplayer position sync — useLiveKitVoice
+    // throttles further before hitting the data channel.
+    EventBus.emit("local-player-tile", {
+      x: Math.floor(x / TILE_SIZE),
+      y: Math.floor(y / TILE_SIZE),
+    });
   }
 
   // ---------------------------------------------------------------------------

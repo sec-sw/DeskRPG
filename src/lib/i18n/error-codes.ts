@@ -107,6 +107,10 @@ export type ErrorCode =
   | "upload_file_too_large"
   | "upload_archive_too_large"
   | "upload_archive_too_many_entries"
+  | "attachment_file_too_large"
+  | "channel_quota_exceeded"
+  | "voice_not_configured"
+  | "voice_disabled"
   | "failed_to_upload_template"
   | "failed_to_fetch_stamps"
   | "failed_to_fetch_stamp"
@@ -233,6 +237,10 @@ const ERROR_MESSAGE_KEYS: Record<ErrorCode, string> = {
   upload_file_too_large: "errors.uploadFileTooLarge",
   upload_archive_too_large: "errors.uploadArchiveTooLarge",
   upload_archive_too_many_entries: "errors.uploadArchiveTooManyEntries",
+  attachment_file_too_large: "errors.attachmentFileTooLarge",
+  channel_quota_exceeded: "errors.channelQuotaExceeded",
+  voice_not_configured: "errors.voiceNotConfigured",
+  voice_disabled: "errors.voiceDisabled",
   failed_to_upload_template: "errors.failedToUploadTemplate",
   failed_to_fetch_stamps: "errors.failedToFetchStamps",
   failed_to_fetch_stamp: "errors.failedToFetchStamp",

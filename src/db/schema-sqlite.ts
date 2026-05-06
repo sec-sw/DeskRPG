@@ -357,3 +357,39 @@ export const projectStamps = sqliteTable("project_stamps", {
 }, (t) => [
   unique("uq_project_stamp").on(t.projectId, t.stampId),
 ]);
+
+// ── Channel attachments ────────────────────────────────────
+export const attachments = sqliteTable("attachments", {
+  id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+  channelId: text("channel_id").notNull().references(() => channels.id, { onDelete: "cascade" }),
+  uploaderId: text("uploader_id").notNull().references(() => users.id, { onDelete: "restrict" }),
+  filename: text("filename").notNull(),
+  contentType: text("content_type").notNull(),
+  byteSize: integer("byte_size").notNull(),
+  sha256: text("sha256").notNull(),
+  storageDriver: text("storage_driver").notNull(),
+  storageKey: text("storage_key").notNull(),
+  thumbnailKey: text("thumbnail_key"),
+  metadata: text("metadata").notNull().default("{}"),
+  createdAt: text("created_at").$defaultFn(() => new Date().toISOString()).notNull(),
+  deletedAt: text("deleted_at"),
+}, (table) => [
+  index("idx_attachments_channel").on(table.channelId),
+  index("idx_attachments_uploader").on(table.uploaderId),
+  index("idx_attachments_created").on(table.createdAt),
+]);
+
+// ── Voice rooms ─────────────────────────────────────────────
+export const voiceRooms = sqliteTable("voice_rooms", {
+  id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+  channelId: text("channel_id").notNull().references(() => channels.id, { onDelete: "cascade" }),
+  livekitRoomName: text("livekit_room_name").notNull(),
+  enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+  accessMode: text("access_mode").notNull().default("members"),
+  proximityEnabled: integer("proximity_enabled", { mode: "boolean" }).notNull().default(false),
+  proximityRadius: integer("proximity_radius").notNull().default(5),
+  createdAt: text("created_at").$defaultFn(() => new Date().toISOString()).notNull(),
+  updatedAt: text("updated_at").$defaultFn(() => new Date().toISOString()).notNull(),
+}, (table) => [
+  uniqueIndex("voice_rooms_channel_unique").on(table.channelId),
+]);

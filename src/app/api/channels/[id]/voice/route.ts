@@ -10,6 +10,7 @@ import { livekitConfigured } from "@/lib/livekit-config";
 import { ensureVoiceRoom, toVoiceRoomDTO, updateVoiceRoomSettings } from "@/lib/voice/room";
 import { checkVoiceSettingsAccess } from "@/lib/voice/access";
 import { checkChannelReadAccess } from "@/lib/attachments/access";
+import { logEvent } from "@/lib/observability/events";
 
 export const runtime = "nodejs";
 
@@ -66,6 +67,13 @@ export async function PATCH(
   if (typeof body.proximityRadius === "number") patch.proximityRadius = body.proximityRadius;
 
   const updated = await updateVoiceRoomSettings(channelId, patch);
+  logEvent("voice.settings.updated", {
+    channelId,
+    userId,
+    enabled: updated.enabled,
+    accessMode: updated.accessMode,
+    proximityEnabled: updated.proximityEnabled,
+  });
   return NextResponse.json({ voice: toVoiceRoomDTO(updated) });
 }
 

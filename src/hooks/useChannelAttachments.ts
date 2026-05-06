@@ -25,8 +25,18 @@ export interface ChannelAttachment {
   createdAt: string;
 }
 
+export interface ChannelStorageQuota {
+  /** Total non-deleted bytes this channel currently consumes. */
+  usedBytes: number;
+  /** Per-channel cap in bytes. 0 means quota disabled. */
+  capBytes: number;
+  /** Per-file cap in bytes. */
+  perFileMaxBytes: number;
+}
+
 export interface UseChannelAttachmentsResult {
   items: ChannelAttachment[];
+  quota: ChannelStorageQuota | null;
   loading: boolean;
   error: string | null;
   upload: (file: File) => Promise<ChannelAttachment | null>;
@@ -45,6 +55,7 @@ export function useChannelAttachments(
   socket: Socket | null,
 ): UseChannelAttachmentsResult {
   const [items, setItems] = useState<ChannelAttachment[]>([]);
+  const [quota, setQuota] = useState<ChannelStorageQuota | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const aliveRef = useRef(true);
@@ -64,8 +75,11 @@ export function useChannelAttachments(
         const data = await safeJson(res);
         throw new Error(data?.errorCode || `HTTP ${res.status}`);
       }
-      const data = (await res.json()) as { items: ChannelAttachment[] };
-      if (aliveRef.current) setItems(data.items);
+      const data = (await res.json()) as { items: ChannelAttachment[]; quota?: ChannelStorageQuota };
+      if (aliveRef.current) {
+        setItems(data.items);
+        if (data.quota) setQuota(data.quota);
+      }
     } catch (e) {
       if (aliveRef.current) setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -87,14 +101,27 @@ export function useChannelAttachments(
     if (!socket) return;
     const onCreated = (payload: AttachmentEventPayload) => {
       if (!payload.attachment) return;
+      const created = payload.attachment;
       setItems((prev) => {
-        if (prev.some((a) => a.id === payload.attachment!.id)) return prev;
-        return [payload.attachment!, ...prev];
+        if (prev.some((a) => a.id === created.id)) return prev;
+        return [created, ...prev];
       });
+      setQuota((prev) =>
+        prev ? { ...prev, usedBytes: prev.usedBytes + created.byteSize } : prev,
+      );
     };
     const onDeleted = (payload: AttachmentEventPayload) => {
       if (!payload.attachmentId) return;
-      setItems((prev) => prev.filter((a) => a.id !== payload.attachmentId));
+      setItems((prev) => {
+        const removed = prev.find((a) => a.id === payload.attachmentId);
+        const nextItems = prev.filter((a) => a.id !== payload.attachmentId);
+        if (removed) {
+          setQuota((q) =>
+            q ? { ...q, usedBytes: Math.max(0, q.usedBytes - removed.byteSize) } : q,
+          );
+        }
+        return nextItems;
+      });
     };
     socket.on("attachment:created", onCreated);
     socket.on("attachment:deleted", onDeleted);
@@ -127,6 +154,9 @@ export function useChannelAttachments(
         setItems((prev) =>
           prev.some((a) => a.id === created.id) ? prev : [created, ...prev],
         );
+        setQuota((prev) =>
+          prev ? { ...prev, usedBytes: prev.usedBytes + created.byteSize } : prev,
+        );
       }
       return created ?? null;
     },
@@ -139,11 +169,21 @@ export function useChannelAttachments(
       credentials: "same-origin",
     });
     if (!res.ok) return false;
-    if (aliveRef.current) setItems((prev) => prev.filter((a) => a.id !== attachmentId));
+    if (aliveRef.current) {
+      setItems((prev) => {
+        const removed = prev.find((a) => a.id === attachmentId);
+        if (removed) {
+          setQuota((q) =>
+            q ? { ...q, usedBytes: Math.max(0, q.usedBytes - removed.byteSize) } : q,
+          );
+        }
+        return prev.filter((a) => a.id !== attachmentId);
+      });
+    }
     return true;
   }, []);
 
-  return { items, loading, error, upload, remove, refresh };
+  return { items, quota, loading, error, upload, remove, refresh };
 }
 
 async function safeJson(res: Response): Promise<{ errorCode?: string; attachment?: ChannelAttachment } | null> {

@@ -45,7 +45,8 @@
     "db:migrate": "dotenv -e .env.local -- drizzle-kit migrate",
     "db:studio": "dotenv -e .env.local -- drizzle-kit studio",
     "db:setup": "dotenv -e .env.local -- drizzle-kit migrate",
-    "deploy:test": "bash deploy/test-deploy.sh"
+    "deploy:test": "bash deploy/test-deploy.sh",
+    "attachments:cleanup": "tsx scripts/cleanup-attachments.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.703.0",

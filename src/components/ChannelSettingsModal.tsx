@@ -3,8 +3,9 @@ import { useCallback, useEffect, useState } from "react";
 import { useT } from "@/lib/i18n";
 import { getLocalizedErrorMessage } from "@/lib/i18n/error-codes";
 import OpenClawPairingStatusCard, { type OpenClawPairingStatus } from "@/components/openclaw/OpenClawPairingStatusCard";
+import ChannelVoiceSettingsTab from "@/components/ChannelVoiceSettingsTab";
 
-type ChannelSettingsTab = "settings" | "members" | "gateway";
+type ChannelSettingsTab = "settings" | "members" | "gateway" | "voice";
 
 interface ChannelSettingsModalProps {
   channelId: string;
@@ -453,6 +454,10 @@ export default function ChannelSettingsModal({
             className={`flex-1 py-2 text-sm font-semibold ${tab === "gateway" ? "text-indigo-400 border-b-2 border-indigo-400" : "text-gray-400"}`}>
             {t("settings.gateway")}
           </button>
+          <button onClick={() => setTab("voice")}
+            className={`flex-1 py-2 text-sm font-semibold ${tab === "voice" ? "text-indigo-400 border-b-2 border-indigo-400" : "text-gray-400"}`}>
+            {t("settings.voice")}
+          </button>
         </div>
 
         <div className="flex-1 overflow-y-auto p-5">
@@ -538,7 +543,7 @@ export default function ChannelSettingsModal({
                 </div>
               )}
             </div>
-          ) : (
+          ) : tab === "gateway" ? (
             <div className="space-y-4">
               {gatewayLoading ? (
                 <p className="text-gray-400 text-sm py-4 text-center">{t("settings.loadingGateway")}</p>
@@ -762,6 +767,8 @@ export default function ChannelSettingsModal({
                 </>
               )}
             </div>
+          ) : (
+            <ChannelVoiceSettingsTab channelId={channelId} />
           )}
         </div>
       </div>

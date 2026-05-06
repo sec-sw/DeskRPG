@@ -14,9 +14,14 @@ import {
 } from "@/lib/attachments/access";
 import {
   createAttachment,
+  getChannelStorageBytes,
   listChannelAttachments,
 } from "@/lib/attachments/store";
-import { getAttachmentFileMaxBytes } from "@/lib/upload-limits";
+import {
+  getAttachmentFileMaxBytes,
+  getChannelQuotaBytes,
+} from "@/lib/upload-limits";
+import { logEvent } from "@/lib/observability/events";
 import internalTransport from "@/lib/internal-transport.js";
 
 const { buildInternalAuthHeaders, getInternalSocketBaseUrl } = internalTransport as {
@@ -72,9 +77,33 @@ export async function POST(
     body,
   });
   if (!result.ok) {
-    const status = result.errorCode === "channel_quota_exceeded" ? 409 : 413;
+    let status = 413;
+    if (result.errorCode === "channel_quota_exceeded") status = 409;
+    else if (result.errorCode === "attachment_infected") status = 422;
+    if (result.errorCode === "attachment_infected") {
+      logEvent("attachment.scan_blocked", {
+        channelId,
+        userId,
+        contentType,
+        byteSize: body.byteLength,
+      });
+    } else {
+      logEvent("attachment.upload_failed", {
+        channelId,
+        userId,
+        errorCode: result.errorCode,
+      });
+    }
     return jsonError(status, result.errorCode, result.errorCode);
   }
+
+  logEvent("attachment.created", {
+    channelId,
+    attachmentId: result.attachment.id,
+    uploaderId: userId,
+    contentType,
+    byteSize: result.attachment.byteSize,
+  });
 
   // Best-effort socket fanout so other clients see the new file in real time.
   // Non-fatal if it fails — the file is already persisted.
@@ -111,11 +140,21 @@ export async function GET(
   const limit = parseInt(url.searchParams.get("limit") ?? "50", 10);
   const offset = parseInt(url.searchParams.get("offset") ?? "0", 10);
 
-  const items = await listChannelAttachments(channelId, {
-    limit: Number.isFinite(limit) ? limit : 50,
-    offset: Number.isFinite(offset) ? offset : 0,
+  const [items, usedBytes] = await Promise.all([
+    listChannelAttachments(channelId, {
+      limit: Number.isFinite(limit) ? limit : 50,
+      offset: Number.isFinite(offset) ? offset : 0,
+    }),
+    getChannelStorageBytes(channelId),
+  ]);
+  return NextResponse.json({
+    items,
+    quota: {
+      usedBytes,
+      capBytes: getChannelQuotaBytes(),
+      perFileMaxBytes: getAttachmentFileMaxBytes(),
+    },
   });
-  return NextResponse.json({ items });
 }
 
 function jsonError(status: number, errorCode: string, message: string) {

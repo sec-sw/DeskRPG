@@ -32,7 +32,7 @@ export default function ChannelFilesPanel({
   onClose,
 }: ChannelFilesPanelProps) {
   const t = useT();
-  const { items, loading, error, upload, remove } = useChannelAttachments(channelId, socket);
+  const { items, quota, loading, error, upload, remove } = useChannelAttachments(channelId, socket);
   const [uploadingNames, setUploadingNames] = useState<string[]>([]);
   const [dragOver, setDragOver] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -92,30 +92,35 @@ export default function ChannelFilesPanel({
   return (
     <div className="flex flex-col h-full bg-bg/95 text-text">
       {/* Header */}
-      <div className="flex items-center justify-between px-3 py-2 border-b border-border bg-surface/80">
-        <span className="text-sm font-bold text-text-secondary">{t("attachments.title")}</span>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => fileInputRef.current?.click()}
-            className="text-xs px-2 py-1 rounded bg-primary/20 hover:bg-primary/30 text-primary flex items-center gap-1"
-            title={t("attachments.upload")}
-          >
-            <Upload className="w-3.5 h-3.5" />
-            {t("attachments.upload")}
-          </button>
-          {onClose && (
-            <button onClick={onClose} className="text-text-muted hover:text-text" title={t("common.close")}>
-              <X className="w-4 h-4" />
+      <div className="border-b border-border bg-surface/80">
+        <div className="flex items-center justify-between px-3 py-2">
+          <span className="text-sm font-bold text-text-secondary">{t("attachments.title")}</span>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              className="text-xs px-2 py-1 rounded bg-primary/20 hover:bg-primary/30 text-primary flex items-center gap-1"
+              title={t("attachments.upload")}
+            >
+              <Upload className="w-3.5 h-3.5" />
+              {t("attachments.upload")}
             </button>
-          )}
+            {onClose && (
+              <button onClick={onClose} className="text-text-muted hover:text-text" title={t("common.close")}>
+                <X className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            className="hidden"
+            onChange={onSelectFiles}
+          />
         </div>
-        <input
-          ref={fileInputRef}
-          type="file"
-          multiple
-          className="hidden"
-          onChange={onSelectFiles}
-        />
+        {quota && quota.capBytes > 0 && (
+          <QuotaBar quota={quota} t={t} />
+        )}
       </div>
 
       {/* Drop zone + list */}
@@ -168,6 +173,36 @@ export default function ChannelFilesPanel({
             onDelete={() => onDelete(attachment)}
           />
         ))}
+      </div>
+    </div>
+  );
+}
+
+function QuotaBar({
+  quota,
+  t,
+}: {
+  quota: { usedBytes: number; capBytes: number };
+  t: (key: string, values?: Record<string, string>) => string;
+}) {
+  const ratio = quota.capBytes > 0 ? quota.usedBytes / quota.capBytes : 0;
+  const pct = Math.min(100, Math.max(0, ratio * 100));
+  const color =
+    ratio > 0.9 ? "bg-danger" : ratio > 0.75 ? "bg-amber-500" : "bg-primary";
+  return (
+    <div className="px-3 pb-1.5">
+      <div className="flex items-center justify-between text-[10px] text-text-dim mb-0.5">
+        <span>
+          {formatBytes(quota.usedBytes)} / {formatBytes(quota.capBytes)}
+        </span>
+        <span>{pct.toFixed(0)}%</span>
+      </div>
+      <div className="h-1 rounded-full bg-surface overflow-hidden">
+        <div
+          className={`h-full ${color} transition-all`}
+          style={{ width: `${pct}%` }}
+          aria-label={t("attachments.quotaUsage")}
+        />
       </div>
     </div>
   );

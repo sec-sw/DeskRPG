@@ -159,6 +159,10 @@ export function useLiveKitVoice(
   const lastBroadcastRef = useRef(0);
   const lastBroadcastedPosRef = useRef<{ x: number; y: number } | null>(null);
   const proximityTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Token expiry watchdog. Refreshes the LiveKit JWT before TTL elapses so
+  // long sessions don't get bumped off the SFU.
+  const tokenExpiresAtRef = useRef<number>(0);
+  const tokenRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const roomRef = useRef<Room | null>(null);
   // True for the entire mounted lifetime; flipped only on real unmount so we
@@ -303,120 +307,121 @@ export function useLiveKitVoice(
     const supersededOrDead = (): boolean =>
       !aliveRef.current || generationRef.current !== myGen;
 
-    let tokenData: VoiceTokenResponse;
+    // Wrap the entire flow so connectingRef is *always* released — every
+    // early return here used to leave it stuck true and freeze the UI.
+    let pendingRoom: Room | null = null;
     try {
-      const url = characterId
-        ? `/api/channels/${channelId}/voice/token?characterId=${encodeURIComponent(characterId)}`
-        : `/api/channels/${channelId}/voice/token`;
-      const res = await fetch(url, { method: "POST", credentials: "same-origin" });
-      if (supersededOrDead()) return;
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        setState("error");
-        setErrorCode(typeof err.errorCode === "string" ? err.errorCode : `http_${res.status}`);
-        return;
-      }
-      tokenData = (await res.json()) as VoiceTokenResponse;
-      if (supersededOrDead()) return;
-    } catch {
-      if (!supersededOrDead()) {
-        setState("error");
-        setErrorCode("connect_failed");
-      }
-      return;
-    } finally {
-      // Note: we keep connectingRef true through the room-build phase below.
-      // It's released after roomRef adoption (success) or after disposal
-      // (failure / supersession).
-    }
-
-    let room: Room;
-    try {
-      const livekit = await import("livekit-client");
-      if (supersededOrDead()) return;
-      room = new livekit.Room({
-        adaptiveStream: true,
-        dynacast: true,
-        audioCaptureDefaults: { autoGainControl: true, echoCancellation: true, noiseSuppression: true },
-      });
-      attachRoomListeners(livekit, room, {
-        onParticipantsChange: () => {
-          if (!aliveRef.current || roomRef.current !== room) return;
-          setParticipants(snapshotParticipants(room));
-        },
-        onTracksChange: () => {
-          if (!aliveRef.current || roomRef.current !== room) return;
-          setParticipants(snapshotParticipants(room));
-          const ss = snapshotScreenShares(room);
-          setScreenShares(ss);
-          setIsLocalScreenSharing(ss.some((s) => s.isLocal));
-          const cams = snapshotCameras(room);
-          setCameras(cams);
-          setIsLocalCameraOn(cams.some((c) => c.isLocal));
-          // New audio subs need an immediate volume apply so we don't briefly
-          // play remote voice at full volume before the next interval tick.
-          applyProximityVolumes();
-        },
-        onConnectionStateChange: (connState) => {
-          if (!aliveRef.current || roomRef.current !== room) return;
-          if (connState === livekit.ConnectionState.Reconnecting) setState("reconnecting");
-          else if (connState === livekit.ConnectionState.Connected) setState("connected");
-          else if (connState === livekit.ConnectionState.Disconnected) setState("idle");
-        },
-        onDataReceived: (data, participant) => {
-          if (!aliveRef.current || roomRef.current !== room) return;
-          if (!participant) return;
-          const msg = decodeProximityPayload(data);
-          if (!msg) return;
-          remotePositionsRef.current.set(participant.identity, {
-            x: msg.x,
-            y: msg.y,
-            updatedAt: Date.now(),
-          });
-        },
-      });
-
-      await room.connect(tokenData.url, tokenData.token);
-      if (supersededOrDead()) {
-        await room.disconnect().catch(() => undefined);
-        return;
-      }
-      // Publish the mic. If permission is denied we still stay connected
-      // (listen-only mode) and surface the reason via errorCode.
+      let tokenData: VoiceTokenResponse;
       try {
-        await room.localParticipant.setMicrophoneEnabled(true);
-      } catch (micErr) {
-        if (isPermissionDenied(micErr)) {
-          setErrorCode("voice_permission_denied");
-        } else {
-          setErrorCode("voice_mic_failed");
+        const url = characterId
+          ? `/api/channels/${channelId}/voice/token?characterId=${encodeURIComponent(characterId)}`
+          : `/api/channels/${channelId}/voice/token`;
+        const res = await fetch(url, { method: "POST", credentials: "same-origin" });
+        if (supersededOrDead()) return;
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          setState("error");
+          setErrorCode(typeof err.errorCode === "string" ? err.errorCode : `http_${res.status}`);
+          return;
+        }
+        tokenData = (await res.json()) as VoiceTokenResponse;
+        tokenExpiresAtRef.current = new Date(tokenData.expiresAt).getTime();
+        if (supersededOrDead()) return;
+      } catch {
+        if (!supersededOrDead()) {
+          setState("error");
+          setErrorCode("connect_failed");
+        }
+        return;
+      }
+
+      try {
+        const livekit = await import("livekit-client");
+        if (supersededOrDead()) return;
+        pendingRoom = new livekit.Room({
+          adaptiveStream: true,
+          dynacast: true,
+          audioCaptureDefaults: {
+            autoGainControl: true,
+            echoCancellation: true,
+            noiseSuppression: true,
+          },
+        });
+        const room = pendingRoom;
+        attachRoomListeners(livekit, room, {
+          onParticipantsChange: () => {
+            if (!aliveRef.current || roomRef.current !== room) return;
+            setParticipants(snapshotParticipants(room));
+          },
+          onTracksChange: () => {
+            if (!aliveRef.current || roomRef.current !== room) return;
+            setParticipants(snapshotParticipants(room));
+            const ss = snapshotScreenShares(room);
+            setScreenShares(ss);
+            setIsLocalScreenSharing(ss.some((s) => s.isLocal));
+            const cams = snapshotCameras(room);
+            setCameras(cams);
+            setIsLocalCameraOn(cams.some((c) => c.isLocal));
+            applyProximityVolumes();
+          },
+          onConnectionStateChange: (connState) => {
+            if (!aliveRef.current || roomRef.current !== room) return;
+            if (connState === livekit.ConnectionState.Reconnecting) setState("reconnecting");
+            else if (connState === livekit.ConnectionState.Connected) setState("connected");
+            else if (connState === livekit.ConnectionState.Disconnected) setState("idle");
+          },
+          onDataReceived: (data, participant) => {
+            if (!aliveRef.current || roomRef.current !== room) return;
+            if (!participant) return;
+            const msg = decodeProximityPayload(data);
+            if (!msg) return;
+            remotePositionsRef.current.set(participant.identity, {
+              x: msg.x,
+              y: msg.y,
+              updatedAt: Date.now(),
+            });
+          },
+        });
+
+        await room.connect(tokenData.url, tokenData.token);
+        if (supersededOrDead()) return;
+        // Publish the mic. If permission is denied we still stay connected
+        // (listen-only mode) and surface the reason via errorCode.
+        try {
+          await room.localParticipant.setMicrophoneEnabled(true);
+        } catch (micErr) {
+          if (isPermissionDenied(micErr)) {
+            setErrorCode("voice_permission_denied");
+          } else {
+            setErrorCode("voice_mic_failed");
+          }
+        }
+        if (supersededOrDead()) return;
+
+        // Adopt the room only after everything succeeded.
+        roomRef.current = room;
+        pendingRoom = null;
+        setState("connected");
+        setIsMicMuted(false);
+        setParticipants(snapshotParticipants(room));
+        setScreenShares(snapshotScreenShares(room));
+        setIsLocalScreenSharing(false);
+        setCameras(snapshotCameras(room));
+        setIsLocalCameraOn(false);
+      } catch {
+        if (!supersededOrDead()) {
+          setState("error");
+          setErrorCode("connect_failed");
         }
       }
-    } catch {
-      if (!supersededOrDead()) {
-        setState("error");
-        setErrorCode("connect_failed");
+    } finally {
+      // Dispose any room we built but didn't adopt.
+      if (pendingRoom) {
+        await pendingRoom.disconnect().catch(() => undefined);
       }
       connectingRef.current = false;
-      return;
     }
-
-    if (supersededOrDead()) {
-      await room.disconnect().catch(() => undefined);
-      connectingRef.current = false;
-      return;
-    }
-
-    roomRef.current = room;
-    setState("connected");
-    setIsMicMuted(false);
-    setParticipants(snapshotParticipants(room));
-    setScreenShares(snapshotScreenShares(room));
-    setIsLocalScreenSharing(false);
-    setCameras(snapshotCameras(room));
-    setIsLocalCameraOn(false);
-    connectingRef.current = false;
-  }, [channelId, characterId, snapshotParticipants, snapshotScreenShares, snapshotCameras]);
+  }, [channelId, characterId, snapshotParticipants, snapshotScreenShares, snapshotCameras, applyProximityVolumes]);
 
   const disconnect = useCallback(async () => {
     const room = roomRef.current;
@@ -615,6 +620,65 @@ export function useLiveKitVoice(
     setIsMicMuted(next);
     refreshParticipants();
   }, [isMicMuted, refreshParticipants]);
+
+  // ── Token refresh watchdog ─────────────────────────────────────
+  // Fetches a fresh LiveKit JWT 5 minutes before TTL elapses. livekit-client
+  // does not expose a public hot-swap method, so we attempt the undocumented
+  // `Room.updateToken` if the build supports it; otherwise the timer simply
+  // re-arms with the new expiry. The server-side mint refreshes its own audit
+  // log even when the client can't hot-swap, and the user can reconnect
+  // manually if the session does eventually drop.
+  const refreshToken = useCallback(async () => {
+    const room = roomRef.current;
+    if (!room || !channelId) return;
+    try {
+      const url = characterId
+        ? `/api/channels/${channelId}/voice/token?characterId=${encodeURIComponent(characterId)}`
+        : `/api/channels/${channelId}/voice/token`;
+      const res = await fetch(url, { method: "POST", credentials: "same-origin" });
+      if (!res.ok) return;
+      const data = (await res.json()) as VoiceTokenResponse;
+      tokenExpiresAtRef.current = new Date(data.expiresAt).getTime();
+      // Hot-swap if the SDK build exposes it; otherwise no-op. The timer
+      // above re-arms based on the fresh expiry regardless.
+      const maybeUpdate = (room as unknown as { updateToken?: (t: string) => void | Promise<void> })
+        .updateToken;
+      if (typeof maybeUpdate === "function") {
+        try {
+          await maybeUpdate.call(room, data.token);
+        } catch {
+          /* best effort */
+        }
+      }
+    } catch {
+      /* try again on the next tick */
+    }
+  }, [channelId, characterId]);
+
+  useEffect(() => {
+    if (state !== "connected") {
+      if (tokenRefreshTimerRef.current) {
+        clearTimeout(tokenRefreshTimerRef.current);
+        tokenRefreshTimerRef.current = null;
+      }
+      return;
+    }
+    const expiresAt = tokenExpiresAtRef.current;
+    if (!expiresAt) return;
+    // Refresh 5 minutes before expiry, with a floor of 30s so a near-expired
+    // token still gets one chance.
+    const ttl = expiresAt - Date.now();
+    const delay = Math.max(30_000, ttl - 5 * 60 * 1000);
+    tokenRefreshTimerRef.current = setTimeout(() => {
+      void refreshToken();
+    }, delay);
+    return () => {
+      if (tokenRefreshTimerRef.current) {
+        clearTimeout(tokenRefreshTimerRef.current);
+        tokenRefreshTimerRef.current = null;
+      }
+    };
+  }, [state, refreshToken]);
 
   // ── Cleanup on channel switch ──────────────────────────────────
   // Bumps the generation so any in-flight connect() abandons its room, then

@@ -14,6 +14,7 @@ import {
 } from "@/lib/attachments/access";
 import { softDeleteAttachment } from "@/lib/attachments/store";
 import { getStorage, StorageNotFound } from "@/lib/storage";
+import { logEvent } from "@/lib/observability/events";
 import internalTransport from "@/lib/internal-transport.js";
 
 const { buildInternalAuthHeaders, getInternalSocketBaseUrl } = internalTransport as {
@@ -91,6 +92,13 @@ export async function DELETE(
 
   const ok = await softDeleteAttachment(id);
   if (!ok) return jsonError(404, "attachment_not_found", "attachment_not_found");
+
+  logEvent("attachment.deleted", {
+    channelId: result.attachment.channelId,
+    attachmentId: id,
+    deletedBy: userId,
+    byteSize: result.attachment.byteSize,
+  });
 
   // Notify the channel room so other clients drop the file from their UI.
   try {

@@ -109,6 +109,7 @@ export type ErrorCode =
   | "upload_archive_too_many_entries"
   | "attachment_file_too_large"
   | "channel_quota_exceeded"
+  | "attachment_infected"
   | "voice_not_configured"
   | "voice_disabled"
   | "failed_to_upload_template"
@@ -239,6 +240,7 @@ const ERROR_MESSAGE_KEYS: Record<ErrorCode, string> = {
   upload_archive_too_many_entries: "errors.uploadArchiveTooManyEntries",
   attachment_file_too_large: "errors.attachmentFileTooLarge",
   channel_quota_exceeded: "errors.channelQuotaExceeded",
+  attachment_infected: "errors.attachmentInfected",
   voice_not_configured: "errors.voiceNotConfigured",
   voice_disabled: "errors.voiceDisabled",
   failed_to_upload_template: "errors.failedToUploadTemplate",

@@ -176,6 +176,114 @@ For production, always set a real `JWT_SECRET`.
 OpenClaw gateway URL and token are configured inside the app from `설정 -> 채널 설정 -> AI 연결`.
 Even in the integrated Docker setup, provider/model onboarding is still completed in the OpenClaw dashboard.
 
+## Realtime Voice, Video, Screen Share
+
+DeskRPG ships with a LiveKit-backed realtime media stack. It is opt-in: with
+no `LIVEKIT_*` env vars set, the voice bar is hidden and uploads work as
+normal.
+
+### Self-host stack
+
+```bash
+cp .env.example .env.docker
+# set JWT_SECRET, POSTGRES_PASSWORD, LIVEKIT_API_SECRET (any random 64-char string)
+docker compose --env-file .env.docker -f docker/docker-compose.livekit.yml up -d
+```
+
+DeskRPG opens at `http://localhost:3102`, LiveKit at `ws://localhost:7880`.
+The default keys (`devkey` / your secret) are baked into the container — change
+them via `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` for production.
+
+### LiveKit Cloud
+
+For managed LiveKit, set in `.env.local`:
+
+```
+LIVEKIT_URL=wss://your-project.livekit.cloud
+LIVEKIT_API_KEY=APIxxxxxxxx
+LIVEKIT_API_SECRET=secret-from-livekit-cloud
+NEXT_PUBLIC_LIVEKIT_URL=wss://your-project.livekit.cloud
+```
+
+### Per-channel controls
+
+Channel owners get a **Voice** tab in `Settings -> Channel Settings` to:
+
+- Enable/disable voice for the channel
+- Pick "channel members" vs "anyone with channel access" join modes
+- Toggle proximity voice + tune the audible radius (1–30 tiles)
+
+### Screen share + camera
+
+Once joined to voice, the bar shows:
+
+- **🎤** mic mute toggle
+- **📹** camera toggle (tiles appear in the top-left grid)
+- **🖥️** screen share (the OS picker opens; viewer pops out for everyone else)
+- **☎️** disconnect
+
+## Channel File Sharing
+
+Drag any file into the **Files** panel (top-right header button) or attach via
+the chat input. Shared files persist in storage and stream back via authenticated
+download URLs.
+
+### Storage backends
+
+| `STORAGE_DRIVER` | Use when | Notes |
+| --- | --- | --- |
+| `local` (default) | npm/SQLite installs, single-host docker | Files under `~/.deskrpg/uploads/attachments/` |
+| `s3` | Production / multi-host | Works with AWS S3, Cloudflare R2, Backblaze B2, MinIO; signed download URLs |
+
+S3 example for Cloudflare R2:
+
+```
+STORAGE_DRIVER=s3
+S3_ENDPOINT=https://<account>.r2.cloudflarestorage.com
+S3_REGION=auto
+S3_BUCKET=deskrpg-attachments
+S3_ACCESS_KEY_ID=...
+S3_SECRET_ACCESS_KEY=...
+S3_FORCE_PATH_STYLE=true
+```
+
+### Quotas
+
+| Env var | Default | Purpose |
+| --- | --- | --- |
+| `STORAGE_FILE_MAX_BYTES` | 100 MiB | Hard cap per uploaded file |
+| `STORAGE_CHANNEL_QUOTA_BYTES` | 5 GiB | Total live attachments per channel; `0` disables |
+
+### Retention cleanup
+
+Soft-deleted attachments stay in the DB indefinitely by default. Run periodic
+hard-deletes via:
+
+```bash
+npm run attachments:cleanup -- --days 30          # hard-delete 30+ day soft-deleted rows
+npm run attachments:cleanup -- --days 30 --dry-run
+```
+
+Output is JSON-line for log aggregation.
+
+### Antivirus scanning (optional)
+
+A `registerAVScanner` extension point lives at
+`src/lib/storage/av-scanner.ts`. Register your scanner once at server boot:
+
+```ts
+import { registerAVScanner } from "@/lib/storage/av-scanner";
+
+registerAVScanner(async ({ body, contentType }) => {
+  const buf = await body();
+  // ... ClamAV / cloud API call ...
+  return { status: "clean" };
+});
+```
+
+When a verdict is `"infected"`, the upload is rejected with HTTP 422 and the
+storage blob is removed.
+
 ## OpenClaw Connection
 
 AI NPCs, task automation, and AI meetings depend on an OpenClaw gateway connection.

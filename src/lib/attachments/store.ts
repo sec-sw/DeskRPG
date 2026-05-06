@@ -10,6 +10,7 @@ import type { Readable } from "node:stream";
 import { attachments, db, isPostgres, jsonForDb } from "@/db";
 import { getStorage, attachmentKey, thumbnailKey, StorageNotFound } from "@/lib/storage";
 import type { StorageDriver } from "@/lib/storage";
+import { scanForMalware, shouldRejectByVerdict } from "@/lib/storage/av-scanner";
 import {
   getAttachmentFileMaxBytes,
   getChannelQuotaBytes,
@@ -50,7 +51,7 @@ export interface AttachmentDTO {
 
 export type CreateAttachmentResult =
   | { ok: true; attachment: AttachmentDTO }
-  | { ok: false; errorCode: UploadLimitErrorCode };
+  | { ok: false; errorCode: UploadLimitErrorCode | "attachment_infected" };
 
 export class AttachmentStorageError extends Error {
   constructor(message: string, public readonly cause?: unknown) {
@@ -130,6 +131,27 @@ export async function createAttachment(
   if (postQuotaErr) {
     await driver.delete(key).catch(() => undefined);
     return { ok: false, errorCode: postQuotaErr };
+  }
+
+  // AV scan after the bytes have landed but before the row is recorded. The
+  // default scanner is a no-op until an operator registers one; on infection
+  // we delete the orphan blob and reject the upload with a stable code.
+  const verdict = await scanForMalware({
+    key,
+    contentType: input.contentType,
+    byteSize: putResult.size,
+    body: async () => {
+      const got = await driver.get(key);
+      const chunks: Buffer[] = [];
+      for await (const chunk of got.body) {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      }
+      return Buffer.concat(chunks);
+    },
+  });
+  if (shouldRejectByVerdict(verdict)) {
+    await driver.delete(key).catch(() => undefined);
+    return { ok: false, errorCode: "attachment_infected" };
   }
 
   let row: AttachmentRow;

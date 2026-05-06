@@ -18,6 +18,7 @@ import { livekitConfigured } from "@/lib/livekit-config";
 import { ensureVoiceRoom } from "@/lib/voice/room";
 import { checkVoiceJoinAccess } from "@/lib/voice/access";
 import { mintVoiceToken } from "@/lib/voice/token";
+import { logEvent } from "@/lib/observability/events";
 
 export const runtime = "nodejs";
 
@@ -73,6 +74,12 @@ export async function POST(
       canSubscribe: true,
       metadata: { channelId, characterId: characterId ?? null },
     });
+    logEvent("voice.token.issued", {
+      channelId,
+      userId,
+      roomName: room.livekitRoomName,
+      proximityEnabled: !!room.proximityEnabled,
+    });
     return NextResponse.json({
       ...token,
       proximity: {
@@ -82,6 +89,11 @@ export async function POST(
     });
   } catch (e) {
     console.error("Failed to mint voice token:", e);
+    logEvent("voice.token.failed", {
+      channelId,
+      userId,
+      error: e instanceof Error ? e.message : String(e),
+    });
     return jsonError(500, "internal_server_error", "Failed to issue token");
   }
 }
